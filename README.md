@@ -9,4 +9,4 @@
 * C++ Compiler (g++ or MSVC)
 * OpenCV 4.0 (or above)
 
-''python3 demo.py''
+''' python3 demo.py '''
