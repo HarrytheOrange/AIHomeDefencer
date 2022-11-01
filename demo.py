@@ -5,13 +5,12 @@ import time
 
 import cv2
 import numpy as np
-import onnxruntime
+from PIL import Image
+from hobot_dnn import pyeasy_dnn    # 用于加载.bin模型
 
 from modules.input_reader import VideoReader, ImageReader
 from modules.draw import Plotter3d, draw_poses
 from modules.parse_poses import parse_poses
-
-import matplotlib.pyplot as plt
 
 
 def rotate_poses(poses_3d, R, t):
@@ -23,6 +22,25 @@ def rotate_poses(poses_3d, R, t):
 
     return poses_3d
 
+# https://blog.csdn.net/weixin_45377629/article/details/124653474
+# ------------------------------------------#
+#   获取模型输入或输出的一些属性信息
+# ------------------------------------------#
+def print_properties(pro):
+    print("tensor type:", pro.tensor_type)      # 对于输入: RGB、BGR那些，对于输出:float32这种
+    print("data type:", pro.dtype)              # uint8、float332那些
+    print("layout:", pro.layout)                # NCHW、NHWC
+    print("shape:", pro.shape)                  # (1, 224, 224, 3)，对应于layout
+
+# ------------------------------------------#
+#   获取模型输入高和宽，用于图片resize
+# ------------------------------------------#
+def get_hw(pro):
+    if pro.layout == "NCHW":
+        return pro.shape[2], pro.shape[3]
+    else:
+        return pro.shape[1], pro.shape[2]
+
 
 if __name__ == '__main__':
     parser = ArgumentParser(description='Lightweight 3D human pose estimation demo. '
@@ -30,8 +48,8 @@ if __name__ == '__main__':
     parser.add_argument('-m', '--model',
                         help='Required. Path to checkpoint with a trained model '
                              '(or an .xml file in case of OpenVINO inference).',
-                        type=str, required=True)
-    parser.add_argument('--video', help='Optional. Path to video file or camera id.', type=str, default='')
+                        type=str, required=False)
+    parser.add_argument('--video', help='Optional. Path to video file or camera id.', type=str, default='8')
     parser.add_argument('-d', '--device',
                         help='Optional. Specify the target device to infer on: CPU or GPU. '
                              'The demo will look for a suitable plugin for device specified '
@@ -60,13 +78,11 @@ if __name__ == '__main__':
         net = InferenceEngineOpenVINO(args.model, args.device)
     else:
         from modules.inference_engine_pytorch import InferenceEnginePyTorch
-        net = InferenceEnginePyTorch(args.model, args.device, use_tensorrt=args.use_tensorrt)
+        # net = InferenceEnginePyTorch(args.model, args.device, use_tensorrt=args.use_tensorrt)
 
-    sess = onnxruntime.InferenceSession('human-pose-estimation-3d.onnx', providers=['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'])
-    input_name = sess.get_inputs()[0].name
-    label_name = sess.get_outputs()[0].name
-    # print(input_name)
-    # print(label_name)
+    net = pyeasy_dnn.load('pose3d_rgb.bin')
+    h, w = get_hw(net[0].inputs[0].properties)
+    des_dim = (w, h)
 
 
     canvas_3d = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -97,9 +113,10 @@ if __name__ == '__main__':
     space_code = 32
     mean_time = 0
     for frame in frame_provider:
-        print("Frametype:", type(frame))
-
         current_time = cv2.getTickCount()
+        frame = cv2.resize(np.array(frame), des_dim, interpolation=cv2.INTER_AREA)
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = np.expand_dims(img, 0)
         if frame is None:
             break
         input_scale = base_height / frame.shape[0]
@@ -108,27 +125,29 @@ if __name__ == '__main__':
         if fx < 0:  # Focal length is unknown
             fx = np.float32(0.8 * frame.shape[1])
 
-        exp_img = cv2.resize(scaled_img, (448, 256))
-        exp_img = exp_img.swapaxes(0, 2).swapaxes(1, 2)
-        exp_img = np.expand_dims(exp_img, axis=0)
-        # print(exp_img.shape)
-        pred_onnx = sess.run([label_name], {input_name: exp_img.astype(np.float32)})[0]
-        # print(pred_onnx.shape)
-
         start = time.perf_counter()
-        inference_result = net.infer(scaled_img)
-        print(inference_result[0].shape)
-        print(inference_result[1].shape)
-        print(inference_result[2].shape)
-        np.save("out.npy", inference_result[0])
-        np.save("keypoint2d_maps.npy", inference_result[1])
-        np.save("paf_maps.npy", inference_result[2])
-        poses_3d, poses_2d = parse_poses(inference_result, input_scale, stride, fx, is_video)
+        inference_result = net[0].forward(img)
         end = time.perf_counter()
         t = (end - start) * 1000.
-        # print("forward time:%fms" % t)
+        print("forward time:%fms" % t)
 
+        # print(len(inference_result))
+        # print(inference_result[0].buffer.shape)
+        # print(inference_result[1].buffer.shape)
+        # print(inference_result[2].buffer.shape)
 
+        output_features = np.squeeze(inference_result[0].buffer, 0)
+        output_heatmaps = np.squeeze(inference_result[1].buffer, 0)
+        output_pafs = np.squeeze(inference_result[2].buffer, 0)
+
+        # print(output_features.shape)
+        # print(output_heatmaps.shape)
+        # print(output_pafs.shape)
+
+        postprocessed_result = (output_features, output_heatmaps, output_pafs)
+
+        # inference_result = net.infer(scaled_img)
+        poses_3d, poses_2d = parse_poses(postprocessed_result, input_scale, stride, fx, is_video)
         edges = []
         if len(poses_3d):
             poses_3d = rotate_poses(poses_3d, R, t)
