@@ -1,5 +1,6 @@
 # Home AI defencer
 ## Based on Real-time 3D Multi-person Pose Estimation Demo， Thanks Mariia Ageeva
+## 使用旭日X3Pi 的BPU运行推理
 
 
 ## Requirements
@@ -8,4 +9,4 @@
 * C++ Compiler (g++ or MSVC)
 * OpenCV 4.0 (or above)
 
-python demo.py  --video 0
+''python3 demo.py''
